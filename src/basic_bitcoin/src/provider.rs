@@ -23,7 +23,7 @@ type Memory = VirtualMemory<VectorMemory>;
 type Memory = VirtualMemory<DefaultMemoryImpl>;
 
 thread_local! {
-    // @review (mainnet)
+    // @review asap (mainnet)
     // Unstable static data: this is reset when the canister is upgraded.
     // pub static UNSTABLE_METRICS: RefCell<Metrics> = RefCell::new(Metrics::default());
     // pub static UNSTABLE_SUBNET_SIZE: RefCell<u32> = RefCell::new(NODES_IN_FIDUCIARY_SUBNET);
@@ -42,7 +42,6 @@ thread_local! {
         StableBTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(1)))));
     pub static PROVIDERS: RefCell<StableBTreeMap<u64, Provider, Memory>> = RefCell::new(
         StableBTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(2)))));
-    
     pub static SERVICE_PROVIDER_MAP: RefCell<StableBTreeMap<StorableServiceProvider, u64, Memory>> = RefCell::new(
         StableBTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(3)))));
 }

@@ -116,8 +116,10 @@ pub async fn syron_p2wpkh(
         let txid_bytes = utxo.outpoint.txid.iter().rev().map(|n| *n as u8).collect::<Vec<u8>>();
         let txid_hex = hex::encode(txid_bytes);
 
-        // @review (upgrade)
-        if txid_hex == "1cd2d3ef9657b6c2894d45e8769d76d63a7c6a66247aacf8c4b6d6d8fb614970".to_string() || utxo.value < 600 {
+        // @network
+        if txid_hex == "1cd2d3ef9657b6c2894d45e8769d76d63a7c6a66247aacf8c4b6d6d8fb614970".to_string()
+        || txid_hex == "3c9890c6ed47c400ee68403fcf46641d5f30154df124b885e93d17ea50c76df7".to_string()
+        || utxo.value < 600 {
             fee_utxos.remove(index);
         }
     }
@@ -170,7 +172,6 @@ pub async fn syron_p2wpkh(
     let signed_transaction: SignedTransaction = sign_transaction_p2wpkh(
         &own_public_key,
         transaction.clone(),
-        key_name,
         origin_derivation_path,
     )
     .await.map_err(|err| UpdateBalanceError::CallError{method: err.method().to_string(), reason: Reason::to_string(err.reason())})?;
@@ -195,7 +196,6 @@ pub async fn burn_p2wpkh(
     amount: u64,
     ssi: &str,
     btc_network: BitcoinNetwork,
-    key_name: String,
     sdb: String,
     dst_address: &str,
     syron_address: &str,
@@ -302,7 +302,6 @@ pub async fn burn_p2wpkh(
     let signed_transaction: SignedTransaction = sign_transaction_p2wpkh(
         &sdb_public_key,
         transaction,
-        key_name,
         derivation_path,
     )
     .await.unwrap();
@@ -395,10 +394,8 @@ pub async fn liquidate_p2wpkh(
     amount: u64,
     ssi: &str,
     btc_network: BitcoinNetwork,
-    key_name: String,
     sdb: String,
     dst_address: &str,
-
 ) -> [u8;32] {
     // Get fee percentiles from previous transactions to estimate our own fee.
     let fee_percentiles = bitcoin_api::get_current_fee_percentiles(btc_network).await;
@@ -465,7 +462,6 @@ pub async fn liquidate_p2wpkh(
     let signed_transaction: SignedTransaction = sign_transaction_p2wpkh(
         &sdb_public_key,
         transaction,
-        key_name,
         derivation_path,
     )
     .await.unwrap();
@@ -508,7 +504,6 @@ async fn build_unsigned_transaction(
         let signed_transaction = sign_transaction_p2wpkh(
             public_key,
             transaction.clone(),
-            String::from(""), // mock key name
             vec![],           // mock derivation path
         )
         .await.unwrap();
@@ -543,7 +538,6 @@ async fn build_transaction_gas(
                 let signed_transaction = sign_transaction_p2wpkh(
                     public_key,
                     transaction.clone(),
-                    String::from(""), // mock key name
                     vec![],           // mock derivation path
                 )
                 .await.unwrap();
@@ -600,7 +594,6 @@ async fn build_unsigned_liquidation(
         let signed_transaction = sign_transaction_p2wpkh(
             public_key,
             transaction.clone(),
-            String::from(""), // mock key name
             vec![],           // mock derivation path
         )
         .await.unwrap();
@@ -804,7 +797,6 @@ async fn build_unsigned_mint(
         let signed_transaction = sign_transaction_p2wpkh(
             own_public_key,
             transaction.clone(),
-            String::from(""), // mock key name
             vec![],           // mock derivation path
         )
         .await.unwrap();
@@ -908,7 +900,6 @@ fn convert_to_bytebufs(data: Vec<Vec<u8>>) -> Vec<ByteBuf> {
 async fn sign_transaction_p2wpkh(
     own_public_key: &[u8],
     unsigned_tx: UnsignedTransaction,
-    key_name: String,
     derivation_path: Vec<Vec<u8>>
 ) -> Result<SignedTransaction, CallError> {
     // Verify that our own address is P2WPKH. @review (test)
@@ -922,9 +913,9 @@ async fn sign_transaction_p2wpkh(
     let sighasher = tx::TxSigHasher::new(&unsigned_tx);
 
     let path = convert_to_bytebufs(derivation_path);
- 
-    let key_name_ = "key_1".to_string(); // @review (mainnet)
     
+    let key_name = state::read_state(|s| s.ecdsa_key_name.clone());
+
     for input in &unsigned_tx.inputs {
         let outpoint = &input.previous_output;
 
@@ -934,7 +925,7 @@ async fn sign_transaction_p2wpkh(
         let sighash = sighasher.sighash(&input, &pkhash);
 
         let sec1_signature =
-            sign_with_ecdsa(key_name_.clone(), DerivationPath::new(path.clone()), sighash)
+            sign_with_ecdsa(key_name.clone(), DerivationPath::new(path.clone()), sighash)
             .await?;
 
         signed_inputs.push(SignedInput {

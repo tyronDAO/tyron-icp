@@ -209,16 +209,20 @@ pub fn canonicalize_json(text: &[u8]) -> Option<Vec<u8>> {
     serde_json::to_vec(&json).ok()
 }
 
-pub async fn get_syron_balance(sdb: String) -> Option<u64> {
-    // @mainnet
-    let outcall = match call_indexer_balance(sdb.clone(), 0, 72_000_000).await {
+pub async fn get_syron_balance(sdb: String, provider: u64) -> Option<u64> {
+    let outcall = match call_indexer_balance(sdb.clone(), provider, 72_000_000).await {
         Ok(result) => result,
         Err(_err) => {
             return None;
         }
     };
     
-    let outcall_json: Value = serde_json::from_str(&outcall).unwrap();
+    let outcall_json: Value = match serde_json::from_str(&outcall) {
+        Ok(json) => json,
+        Err(_err) => {
+            return None;
+        }
+    };
 
     // Access the "overallBalance" field
     let user_balances = outcall_json.pointer("/detail").and_then(Value::as_array).expect("Expected user balance '/detail' to be an array");
@@ -226,7 +230,7 @@ pub async fn get_syron_balance(sdb: String) -> Option<u64> {
         .filter_map(|token| {
             let ticker = token.pointer("/ticker").and_then(Value::as_str);
             let balance = token.pointer("/overallBalance").and_then(Value::as_str);
-            match (ticker, balance) { //@mainnet
+            match (ticker, balance) { //@ticker
                 (Some("SYRON"), Some(balance)) => Some(balance.to_string()),
                 _ => None,
             }

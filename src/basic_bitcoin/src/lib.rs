@@ -80,7 +80,7 @@ async fn syron_transfer(
 
     if receiver_address != origin_address {
         return Err(UpdateBalanceError::GenericError{
-            error_code: 303,
+            error_code: 304,
             error_message: format!("The inscription receiver address ({}) must be equal to the origin of the transfer ({})", receiver_address, origin_address),
         });
     }
@@ -97,12 +97,12 @@ async fn syron_transfer(
 
     if syron_u64 > requested_amt {
         return Err(UpdateBalanceError::GenericError{
-            error_code: 304,
+            error_code: 305,
             error_message: format!("The inscribed amount ({}) cannot exceed the withdrawal amount you requested ({}).", syron_f64, requested_amt/100_000_000),
         });
     }
 
-    // @dev Send SYRON to the destination address
+    // @dev Send SUSD to the destination address
 
     let btc_network = NETWORK.with(|n| n.get());
 
@@ -140,7 +140,7 @@ async fn syron_transfer(
     })
 }
 
-/// Mint SYRON USD using P2WPKH - the transaction id must correspond to the required transfer inscription
+/// Mint SUSD using P2WPKH - the transaction id must correspond to the required transfer inscription
 pub async fn mint(ssi: String, txid: String, cycles_cost: u128, provider: u64, amount: u64, fee: u64) -> Result<String, UpdateBalanceError> {
     
     // @dev Read SYRON available balance (nonce #2)
@@ -157,17 +157,17 @@ pub async fn mint(ssi: String, txid: String, cycles_cost: u128, provider: u64, a
     // amount cannot be lower than 20 cents
     if amount < 20_000_000 {
         return Err(UpdateBalanceError::GenericError{
-            error_code: 301,
+            error_code: 302,
             error_message: "Amount is below the minimum".to_string(),
         });
     }
     
     let key_name = KEY_NAME.with(|kn| kn.borrow().to_string());
 
-    // if empty, throw error
+    // if key is empty, throw error
     if key_name.is_empty() {
         return Err(UpdateBalanceError::GenericError{
-            error_code: 302,
+            error_code: 303,
             error_message: "Key name is empty".to_string(),
         });
     }
@@ -242,7 +242,7 @@ thread_local! {
     // When deploying to the IC this should be `Testnet`.
     // `Mainnet` is currently unsupported.
 
-    // @review (mainnet)
+    // @network
     static NETWORK: Cell<BitcoinNetwork> = Cell::new(BitcoinNetwork::Testnet);
 
     // The derivation path to use for ECDSA secp256k1.
@@ -380,8 +380,8 @@ pub async fn get_inscription(txid: String, cycles_cost: u64, provider: u64) -> R
 }
 
 #[update]
-pub async fn get_indexed_balance(id: String) -> Result<String, UpdateBalanceError> {
-    call_indexer_balance(id, 0, 72_000_000).await //@mainnet
+pub async fn get_indexed_balance(id: String, provider: u64) -> Result<String, UpdateBalanceError> {
+    call_indexer_balance(id, provider, 72_000_000).await
 }
 
 #[query(hidden = true)]
@@ -426,7 +426,7 @@ pub async fn withdraw_susd(args: GetBoxAddressArgs, txid: String, cycles_cost: u
     // @dev Update Balance (the user's SDB MUST have BTC deposit confirmed)
     let _ = updates::update_balance::update_ssi_balance(args.clone()).await; //?;  @review (error) only propagate error if != NoNewUtxos
 
-    // @dev Read SYRON available balance (nonce #2)
+    // @dev Read SUSD available balance (nonce #2)
     let balance = balance_of(SyronLedger::SUSD, &args.ssi, 2).await.unwrap(); //@review the inscribed amt might be less than the balance
 
     mint(args.ssi, txid, cycles_cost as u128, provider, balance, fee).await
@@ -446,7 +446,7 @@ pub async fn syron_withdrawal(args: GetBoxAddressArgs, txid: String, cycles_cost
 }
 
 #[update]
-async fn redeem_btc(args: GetBoxAddressArgs, txid: String) -> Result<String, UpdateBalanceError> {
+async fn redeem_btc(args: GetBoxAddressArgs, txid: String, provider: u64) -> Result<String, UpdateBalanceError> {
     // @dev
 
     // 1. Verify args.op = RedeemBitcoin or throw erorr
@@ -474,7 +474,7 @@ async fn redeem_btc(args: GetBoxAddressArgs, txid: String) -> Result<String, Upd
 
     // 3. Check SUSD balance of the safety deposit box with the Tyron indexer
     let sdb = get_btc_address::get_box_address(args.clone()).await;
-    let syron_u64: u64 = match get_syron_balance(sdb.clone()).await {
+    let syron_u64: u64 = match get_syron_balance(sdb.clone(), provider).await {
         Some(balance) if balance > 0 => balance,
         _ => {
             return Err(UpdateBalanceError::GenericError {
@@ -499,8 +499,8 @@ async fn redeem_btc(args: GetBoxAddressArgs, txid: String) -> Result<String, Upd
     //     });
     // }
 
-    // 5. Check BRC-20 transfer inscription @mainnet
-    let outcall = call_indexer_inscription(0, txid.clone(), 72_000_000).await?;
+    // 5. Check BRC-20 transfer inscription
+    let outcall = call_indexer_inscription(provider, txid.clone(), 72_000_000).await?;
 
     let outcall_json: Value = serde_json::from_str(&outcall).unwrap();
 
@@ -566,7 +566,6 @@ async fn redeem_btc(args: GetBoxAddressArgs, txid: String) -> Result<String, Upd
         amount,
         &ssi,
         btc_network,
-        key_name,
         sdb,
         &ssi,
         &syron_address,
@@ -633,7 +632,7 @@ async fn get_account(ssi: String, dummy: bool) -> Result<CollateralizedAccount, 
 
 #[update]
 // @review the order of UTXOs is important to transfer the proper inscription
-async fn liquidate(args: GetBoxAddressArgs, id: String, txid: String, fee: u64) -> Result<Vec<String>, UpdateBalanceError> {
+async fn liquidate(args: GetBoxAddressArgs, id: String, txid: String, provider: u64, fee: u64) -> Result<Vec<String>, UpdateBalanceError> {
     let ssi: &str = &args.ssi;
     
     // @dev 1. Verify collateral ratio is below 12,000 basis points or throw error
@@ -659,7 +658,7 @@ async fn liquidate(args: GetBoxAddressArgs, id: String, txid: String, fee: u64) 
     let sdb_liquidator = get_btc_address::get_box_address(liquidator).await;
 
     // 2. Check the liquidator's SUSD balance in their safety deposit box with the Tyron indexer
-    let syron_u64: u64 = match get_syron_balance(sdb_liquidator.clone()).await {
+    let syron_u64: u64 = match get_syron_balance(sdb_liquidator.clone(), provider).await {
         Some(balance) => balance,
         None => {
             return Err(UpdateBalanceError::GenericError{
@@ -680,7 +679,6 @@ async fn liquidate(args: GetBoxAddressArgs, id: String, txid: String, fee: u64) 
     // 4. Transfer syron from liquidator's SDB to minter and bitcoin from debtor's SDB to the user's wallet (liquidator)
     let mut res: Vec<String> = Vec::new();
 
-    let provider = 0; // @review (mainnet) provider ID
     let cycles_cost = 72_000_000;
 
     let key_name = KEY_NAME.with(|kn| kn.borrow().to_string());
@@ -715,7 +713,6 @@ async fn liquidate(args: GetBoxAddressArgs, id: String, txid: String, fee: u64) 
         btc_1,
         ssi,
         network,
-        key_name,
         sdb_debtor,
         &id
     )

@@ -28,13 +28,13 @@ pub const CONTENT_TYPE_VALUE: &str = "application/json";
 
 pub const TYRON_MAINNET_HOSTNAME: &str = "btc.tyrondao.org/";
 
-pub const TYRON_TESTNET_HOSTNAME: &str = "testnet.tyron.io/";
+pub const TYRON_TESTNET_HOSTNAME: &str = "tbtc.tyrondao.org/";
 
 pub const TYRON_CREDENTIAL_PATH: &str = "api/";
 
 pub const UNISAT_MAINNET_HOSTNAME: &str = "open-api.unisat.io/";
 
-pub const UNISAT_TESTNET_HOSTNAME: &str = "open-api-testnet.unisat.io/";
+pub const UNISAT_TESTNET_HOSTNAME: &str = "open-api-testnet4.unisat.io/";
 
 pub const BIS_MAINNET_HOSTNAME: &str = "api.bestinslot.xyz/";
 
