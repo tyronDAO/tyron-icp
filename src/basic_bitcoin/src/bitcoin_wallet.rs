@@ -7,6 +7,7 @@
 //! * Option to set the fee.
 
 use crate::{bitcoin_api, ecdsa_api};
+use bitcoin::network;
 use bitcoin::util::psbt::serialize::Serialize;
 use bitcoin::{
     blockdata::{script::Builder, witness::Witness},
@@ -14,14 +15,13 @@ use bitcoin::{
     Address, AddressType, EcdsaSighashType, OutPoint, Script, Transaction, TxIn, TxOut, Txid,
 };
 use candid::error;
-use ic_btc_interface::GetBalanceError;
+use ic_btc_interface::{GetBalanceError, Network};
 use ic_cdk::api::management_canister::bitcoin::{MillisatoshiPerByte, BitcoinNetwork, Satoshi, Utxo,  Outpoint};
 use ic_cdk::print;
 use ic_ckbtc_minter_tyron::address::{derive_ssi_public_key, get_ssi_derivation_path, ssi_derivation_path, BitcoinAddress};
 use ic_ckbtc_minter_tyron::logs::P1;
 use ic_ckbtc_minter_tyron::management::{get_utxos, Reason};
 use ic_ckbtc_minter_tyron::state::read_state;
-use ic_ckbtc_minter_tyron::updates::get_btc_address::init_ecdsa_public_key;
 use ic_ckbtc_minter_tyron::updates::get_withdrawal_account::compute_subaccount;
 use ic_ckbtc_minter_tyron::updates::update_balance::UpdateBalanceError;
 use ic_ckbtc_minter_tyron::{
@@ -52,7 +52,7 @@ impl fmt::Display for DisplayOutpoint<'_> {
 }
 
 /// Returns the P2WPKH address of this canister at the given derivation path.
-pub async fn get_p2wpkh_address(
+pub(crate) async fn get_p2wpkh_address(
     key_name: String,
     derivation_path: Vec<Vec<u8>>,
 ) -> String {
@@ -62,29 +62,27 @@ pub async fn get_p2wpkh_address(
     public_key_to_p2wpkh(&public_key)
 }
 
-pub async fn syron_p2wpkh(
-    btc_network: BitcoinNetwork,
+pub(crate) async fn syron_p2wpkh(
     key_name: String,
     origin_derivation_path: Vec<Vec<u8>>,
     origin_address: String,
     dst_address: &str,
     tx_id: String,
-    fee_per_byte: u64    
+    min_fee: u64    
 ) -> Result<String, UpdateBalanceError> {
+    // @dev Set Bitcoin network
+    let network =
+        state::read_state(|s| (s.btc_network));
+    let btc_network: BitcoinNetwork = match network {
+        Network::Mainnet => BitcoinNetwork::Mainnet,
+        _ => BitcoinNetwork::Testnet,
+    };
+    let fee_per_byte = select_fee_per_byte(btc_network, min_fee).await;
+
     // @dev Fetch sender's public key, address, and UTXOs.
     let own_public_key =
         ecdsa_api::ecdsa_public_key(key_name.clone(), origin_derivation_path.clone()).await;
 
-    let network =
-        state::read_state(|s| (s.btc_network));
-
-    // let network: Network = match btc_network {
-    //     BitcoinNetwork::Mainnet => Network::Mainnet,
-    //     BitcoinNetwork::Testnet => Network::Testnet,
-    //     BitcoinNetwork::Regtest => Network::Regtest,
-    // };
-
-    print("Fetching UTXOs...");
     // Note that pagination may have to be used to get all UTXOs for the given address.
     // For the sake of simplicity, it is assumed here that the `utxo` field in the response
     // contains all UTXOs.
@@ -157,7 +155,7 @@ pub async fn syron_p2wpkh(
     let syron_btc_address = BitcoinAddress::parse(&origin_address, network).unwrap();
     let dst_address = BitcoinAddress::parse(&dst_address, network).unwrap();
     
-    // @dev Builds the transaction that sends the selected UTXO (transfer inscription) to the destination address.
+    // @dev Builds the transaction that sends the selected UTXO (inscribe-transfer) to the destination address.
     let transaction = build_unsigned_mint(
         &own_public_key,
         syron_btc_address,
@@ -176,50 +174,38 @@ pub async fn syron_p2wpkh(
     )
     .await.map_err(|err| UpdateBalanceError::CallError{method: err.method().to_string(), reason: Reason::to_string(err.reason())})?;
 
-    print("Sending transaction...");
-
-    let signed_transaction_bytes = signed_transaction.serialize();
-
-    let concatenated_string = format!(
-        "{}&&{}",
+    let concatenated_result = format!(
+        "Fee per byte: {} && Transaction ID: {}",
         fee_per_byte,
         transaction.txid().to_string(),
-   );
-    
+    );
+
+    let signed_transaction_bytes = signed_transaction.serialize();
     match bitcoin_api::send_transaction(btc_network, signed_transaction_bytes.clone()).await {
-        Ok(()) => Ok(concatenated_string),
+        Ok(()) => Ok(concatenated_result),
         Err(err) => return Err(err)
     }
 }
 
-pub async fn burn_p2wpkh(
+pub(crate) async fn burn_p2wpkh(
     amount: u64,
     ssi: &str,
-    btc_network: BitcoinNetwork,
     sdb: String,
     dst_address: &str,
-    syron_address: &str,
-    txid: String
-) -> Result<[u8;32], UpdateBalanceError> {
-    // Get fee percentiles from previous transactions to estimate our own fee.
-    let fee_percentiles = bitcoin_api::get_current_fee_percentiles(btc_network)
-    .await;
-
-    // @dev Gas in satoshis per byte @review (signet)
-    let fee_per_byte = if fee_percentiles.is_empty() {
-        // There are no fee percentiles. This case can only happen on a regtest
-        // network where there are no non-coinbase transactions. In this case,
-        // we use a default of 5000 millisatoshis/byte (i.e. 5 satoshi/byte)
-        10000
-    } else {
-        // Choose the 50th percentile for sending fees.
-        fee_percentiles[50]
+    syron_address: Option<String>,
+    txid: Option<String>,
+    min_fee: u64
+) -> Result<String, UpdateBalanceError> {
+    // @dev 1. Set Bitcoin network
+    let network =
+        state::read_state(|s| (s.btc_network));
+    let btc_network: BitcoinNetwork = match network {
+        Network::Mainnet => BitcoinNetwork::Mainnet,
+        _ => BitcoinNetwork::Testnet,
     };
+    let fee_per_byte = select_fee_per_byte(btc_network, min_fee).await;
 
-    // let (ecdsa_public_key) =
-    // read_state(|s| (s.ecdsa_public_key));
-
-    let ecdsa_public_key = init_ecdsa_public_key().await;
+    let ecdsa_public_key = state::read_state(|s| s.ecdsa_public_key.clone()).expect("ECDSA public key not initialized");
 
     let sdb_subaccount = compute_subaccount(1, &ssi);
     
@@ -231,16 +217,6 @@ pub async fn burn_p2wpkh(
     // @dev Fetch SDB's public key and UTXOs.
     let sdb_public_key = derive_ssi_public_key(&ecdsa_public_key, &account, &ssi).public_key;
     
-    let network =
-        state::read_state(|s| (s.btc_network));
-
-    // let network: Network = match btc_network {
-    //     BitcoinNetwork::Mainnet => Network::Mainnet,
-    //     BitcoinNetwork::Testnet => Network::Testnet,
-    //     BitcoinNetwork::Regtest => Network::Regtest,
-    // };
-
-    print("Fetching UTXOs...");
     // Note that pagination may have to be used to get all UTXOs for the given address.
     // For the sake of simplicity, it is assumed here that the `utxo` field in the response
     // contains all UTXOs.
@@ -249,71 +225,93 @@ pub async fn burn_p2wpkh(
         .await
         .utxos;
 
-    // @dev The SUSD inscribe-transfer UTXO
-    let mut select_utxo: Option<Utxo> = None;
-
-    // @dev Remove the UTXOs with a value less than 600 satoshis, which are probably inscriptions.
-    for index in (0..utxos.len()).rev() {
-        let utxo = &utxos[index];
-
-        let txid_bytes = utxo.outpoint.txid.iter().rev().map(|n| *n as u8).collect::<Vec<u8>>();
-        let txid_hex = hex::encode(txid_bytes);
-        if txid_hex == txid {
-            select_utxo = Some(utxo.clone());
-            utxos.remove(index);
-        } else if utxo.value < 600 {
-            utxos.remove(index);
-        }
-    }
-
-    let select_utxo = select_utxo.expect("No matching UTXO found!");
-
-    // let utxos: Vec<ic_btc_interface::Utxo> =
-    // get_utxos(network, &own_address, 1, CallSource::Client) // @review (mainnet) min confirmations
-    // .await
-    // .unwrap().utxos;
-
-    // for utxo in &own_utxos {
-    //     log!(
-    //         P1,
-    //         "Minter UTXO: {}",
-    //         DisplayOutpoint(&utxo.outpoint)
-    //     );
-    // }
-
+    // @dev Parse addresses
     let sdb_address = BitcoinAddress::parse(&sdb, network).unwrap();
     let dst_address = BitcoinAddress::parse(dst_address, network).unwrap();
-    let syron_address = BitcoinAddress::parse(syron_address, network).unwrap();
-    
-    let transaction = build_unsigned_transaction(
-        &sdb_public_key,
-        sdb_address,
-        &utxos,
-        dst_address,
-        amount,
-        fee_per_byte,
-        syron_address,
-        select_utxo
-    ).await?;
+   
+    // @dev Build transaction
+    let transaction = match syron_address {
+        Some(address) => {
+            let syron_address = BitcoinAddress::parse(&address, network).unwrap();
+            
+            // @dev The inscribe-transfer UTXO (SYRON BRC-20)
+            let txid = txid.expect("No transaction ID provided for the SYRON BRC-20 inscribe-transfer UTXO.");
 
-    // Sign the transaction.
+            let mut select_utxo: Option<Utxo> = None;
+            for index in (0..utxos.len()).rev() {
+                let utxo = &utxos[index];
+
+                let txid_bytes = utxo.outpoint.txid.iter().rev().map(|n| *n as u8).collect::<Vec<u8>>();
+                let txid_hex = hex::encode(txid_bytes);
+                if txid_hex == txid {
+                    select_utxo = Some(utxo.clone());
+                    utxos.remove(index);
+                }
+            }
+
+            let select_utxo = select_utxo.expect("No matching UTXO found!");
+
+            // let utxos: Vec<ic_btc_interface::Utxo> =
+            // get_utxos(network, &own_address, 1, CallSource::Client) // @review (mainnet) min confirmations
+            // .await
+            // .unwrap().utxos;
+
+            // for utxo in &own_utxos {
+            //     log!(
+            //         P1,
+            //         "Minter UTXO: {}",
+            //         DisplayOutpoint(&utxo.outpoint)
+            //     );
+            // }
+     
+            // Unsigned transaction
+            build_unsigned_transaction(
+                &sdb_public_key,
+                sdb_address,
+                &utxos,
+                dst_address,
+                amount,
+                fee_per_byte,
+                syron_address,
+                select_utxo
+            ).await?
+        },
+        None => {
+            build_unsigned_btc_transaction(
+                true,
+                &sdb_public_key,
+                sdb_address,
+                &utxos,
+                dst_address,
+                amount,
+                fee_per_byte
+            ).await?
+        }
+    };
+
+    // @dev Sign the transaction
     let derivation_path: Vec<Vec<u8>> = get_ssi_derivation_path(&account, ssi).into_iter().map(|index| index.0).collect();
-
     let signed_transaction: SignedTransaction = sign_transaction_p2wpkh(
         &sdb_public_key,
-        transaction,
+        transaction.clone(),
         derivation_path,
     )
     .await.unwrap();
 
-    print("Sending transaction...");
+    let concatenated_result = format!(
+        "Fee per byte: {} && Transaction ID: {}",
+        fee_per_byte,
+        transaction.txid().to_string(),
+    );
+
     let signed_transaction_bytes = signed_transaction.serialize();
     match bitcoin_api::send_transaction(btc_network, signed_transaction_bytes).await {
-        Ok(()) => return Ok(signed_transaction.wtxid()),
-        Err(err) => return Err(err)}
+        Ok(()) => Ok(concatenated_result),
+        Err(err) => Err(err)
+    }
 }
 
-pub async fn gas_p2wpkh(
+pub(crate) async fn gas_p2wpkh(
     amount: u64,
     ssi: &str,
     btc_network: BitcoinNetwork,
@@ -335,7 +333,7 @@ pub async fn gas_p2wpkh(
         fee_percentiles[50]
     };
 
-    let ecdsa_public_key = init_ecdsa_public_key().await;
+    let ecdsa_public_key = state::read_state(|s| s.ecdsa_public_key.clone()).expect("ECDSA public key not initialized");
 
     let sdb_subaccount = compute_subaccount(1, &ssi);
     
@@ -390,28 +388,23 @@ pub async fn gas_p2wpkh(
     ).await
 }
 
-pub async fn liquidate_p2wpkh(
+pub(crate) async fn liquidate_p2wpkh(
     amount: u64,
     ssi: &str,
-    btc_network: BitcoinNetwork,
     sdb: String,
     dst_address: &str,
-) -> [u8;32] {
-    // Get fee percentiles from previous transactions to estimate our own fee.
-    let fee_percentiles = bitcoin_api::get_current_fee_percentiles(btc_network).await;
-
-    // @dev Gas in satoshis per byte @review (signet)
-    let fee_per_byte = if fee_percentiles.is_empty() {
-        // There are no fee percentiles. This case can only happen on a regtest
-        // network where there are no non-coinbase transactions. In this case,
-        // we use a default of 5000 millisatoshis/byte (i.e. 5 satoshi/byte)
-        10000
-    } else {
-        // Choose the 50th percentile for sending fees.
-        fee_percentiles[50]
+    min_fee: u64
+) -> Result<[u8;32], UpdateBalanceError> {
+    // @dev 1. Set Bitcoin network
+    let network =
+        state::read_state(|s| (s.btc_network));
+    let btc_network: BitcoinNetwork = match network {
+        Network::Mainnet => BitcoinNetwork::Mainnet,
+        _ => BitcoinNetwork::Testnet,
     };
+    let fee_per_byte = select_fee_per_byte(btc_network, min_fee).await;
 
-    let ecdsa_public_key = init_ecdsa_public_key().await;
+    let ecdsa_public_key = state::read_state(|s| s.ecdsa_public_key.clone()).expect("ECDSA public key not initialized");
 
     let sdb_subaccount = compute_subaccount(1, &ssi);
     
@@ -422,11 +415,7 @@ pub async fn liquidate_p2wpkh(
 
     // @dev Fetch SDB's public key and UTXOs.
     let sdb_public_key = derive_ssi_public_key(&ecdsa_public_key, &account, &ssi).public_key;
-    
-    let network =
-        state::read_state(|s| (s.btc_network));
 
-    print("Fetching UTXOs...");
     // Note that pagination may have to be used to get all UTXOs for the given address.
     // For the sake of simplicity, it is assumed here that the `utxo` field in the response
     // contains all UTXOs.
@@ -466,12 +455,11 @@ pub async fn liquidate_p2wpkh(
     )
     .await.unwrap();
 
-    print("Sending transaction...");
     let signed_transaction_bytes = signed_transaction.serialize();
-    bitcoin_api::send_transaction(btc_network, signed_transaction_bytes).await;
-    print("Done");
-
-    signed_transaction.wtxid()
+    match bitcoin_api::send_transaction(btc_network, signed_transaction_bytes).await {
+        Ok(()) => Ok(signed_transaction.wtxid()),
+        Err(err) => Err(err)
+    }
 }
 
 async fn build_unsigned_transaction(
@@ -511,7 +499,7 @@ async fn build_unsigned_transaction(
         let signed_tx_bytes_len = signed_transaction.serialize().len() as u64;
 
         if (signed_tx_bytes_len * fee_per_byte) / 1000 == total_fee {
-            print(&format!("Transaction built with fee {}.", total_fee));
+            ic_cdk::println!("Transaction built with total fee {:?}.", total_fee);
             return Ok(transaction);
         } else {
             total_fee = (signed_tx_bytes_len * fee_per_byte) / 1000;
@@ -601,7 +589,7 @@ async fn build_unsigned_liquidation(
         let signed_tx_bytes_len = signed_transaction.serialize().len() as u64;
 
         if (signed_tx_bytes_len * fee_per_byte) / 1000 == total_fee {
-            print(&format!("Transaction built with fee {}.", total_fee));
+            ic_cdk::println!("Transaction built with total fee {:?}.", total_fee);
             return transaction;
         } else {
             total_fee = (signed_tx_bytes_len * fee_per_byte) / 1000;
@@ -642,10 +630,13 @@ fn build_unsigned_tx_with_fee(
         }
     }
 
+    // @dev The inscribe-transfer UTXO is sent to the minter, thus its balance must not be considered (it is "locked").
+    utxos_balance -= select_utxo.value;
+
     if utxos_balance < fee {
         return Err(format!(
-            "Insufficient balance ({} sats) - Trying to transfer {} sats with a fee of {} sats. Please deposit at least {} sats into your SDB.", // @review suggested deposit amount 
-            utxos_balance, amount, fee, fee + amount - utxos_balance, // address @review (format) since now it prints P2wpkhV0([8, 102, 59, 71, 220, 132, 106, 200, 211, 158, 166, 47, 226, 90, 232, 191, 111, 237, 157, 197])
+            "Insufficient unlocked balance ({} sats) - Trying to transfer {} sats with a fee of {} sats. Please deposit at least {} sats into your SDB in order to withdraw {} sats.", // @review suggested deposit amount 
+            utxos_balance, amount, fee, fee + amount - utxos_balance, amount // address @review (format) since now it prints P2wpkhV0([8, 102, 59, 71, 220, 132, 106, 200, 211, 158, 166, 47, 226, 90, 232, 191, 111, 237, 157, 197])
         ));
     } else {
         amount = utxos_balance - fee;
@@ -675,6 +666,7 @@ fn build_unsigned_tx_with_fee(
         .collect();
 
     inputs.append(&mut utxos_for_fee);
+    ic_cdk::println!("UTXO Inputs: {:?}", inputs);
 
     let mut outputs: Vec<ic_ckbtc_minter_tyron::tx::TxOut> = vec![
     ic_ckbtc_minter_tyron::tx::TxOut {
@@ -684,17 +676,17 @@ fn build_unsigned_tx_with_fee(
     
     outputs.push(ic_ckbtc_minter_tyron::tx::TxOut {
         address: dst_address,
-        value: amount,
+        value: amount, // balance - inscribe-transfer - gas fee
     });
 
     let remaining_amount = utxos_balance - amount - fee;
-
     if remaining_amount > DUST_THRESHOLD {
         outputs.push(ic_ckbtc_minter_tyron::tx::TxOut {
             address,
             value: remaining_amount,
         });
     }
+    ic_cdk::println!("UTXO Outputs: {:?}", outputs);
 
     Ok(UnsignedTransaction {
         inputs,
@@ -804,7 +796,7 @@ async fn build_unsigned_mint(
         let signed_tx_bytes_len = signed_transaction.serialize().len() as u64;
 
         if (signed_tx_bytes_len * fee_per_byte) / 1000 == total_fee {
-            print(&format!("Transaction built with fee {}.", total_fee));
+            ic_cdk::println!("Transaction built with total fee {:?}.", total_fee);
             return Ok(transaction);
         } else {
             total_fee = (signed_tx_bytes_len * fee_per_byte) / 1000;
@@ -870,6 +862,7 @@ fn build_unsigned_mint_with_fee(
         .collect();
 
     inputs.append(&mut utxos_for_fee);
+    ic_cdk::println!("UTXO Inputs: {:?}", inputs);
 
     let mut outputs: Vec<ic_ckbtc_minter_tyron::tx::TxOut> = vec![ic_ckbtc_minter_tyron::tx::TxOut {
         address: dst_address,
@@ -877,11 +870,13 @@ fn build_unsigned_mint_with_fee(
     }];
     
     let remaining_amount = to_spend_in_fees - fee;
+    ic_cdk::println!("Remaining amount for minter: {:?} sats", remaining_amount);
 
     outputs.push(ic_ckbtc_minter_tyron::tx::TxOut {
         address: own_address,
         value: remaining_amount,
     });
+    ic_cdk::println!("UTXO Outputs: {:?}", outputs);
     
     Ok(UnsignedTransaction {
         inputs,
@@ -941,4 +936,255 @@ async fn sign_transaction_p2wpkh(
         outputs: unsigned_tx.outputs,
         lock_time: unsigned_tx.lock_time,
     })
+}
+
+/// @dev v3
+pub(crate) async fn btc_p2wpkh(
+    dao_addr: Vec<BitcoinAddress>,
+    dst_address: BitcoinAddress,
+    amount: u64,
+    fee: u64    
+) -> Result<Vec<String>, UpdateBalanceError> {
+    // @dev Set Bitcoin network
+    let network =
+        state::read_state(|s| (s.btc_network));
+    let btc_network: BitcoinNetwork = match network {
+        Network::Mainnet => BitcoinNetwork::Mainnet,
+        _ => BitcoinNetwork::Testnet,
+    };
+    // Set the gas fee per byte
+    let fee_per_byte = select_fee_per_byte(btc_network, fee).await;
+    
+    // @dev Fetch DAO data
+    // The minter address is the SSI
+    // The Treasury address is the minter's Safety Deposit Box
+    let ssi_addr = &dao_addr[0];
+    let ssi = ssi_addr.display(network); 
+    let treasury_addr = &dao_addr[1];
+    let treasury_address = treasury_addr.display(network);
+
+    ic_cdk::println!("Treasury address: {:?}", treasury_address);
+
+    // SDB subaccount & account
+    let subaccount = compute_subaccount(1, &ssi);
+    let account = Account {
+        owner: ic_cdk::id(),
+        subaccount: Some(subaccount)
+    };
+
+    // SDB public key
+    let ecdsa_public_key = state::read_state(|s| s.ecdsa_public_key.clone()).expect("ECDSA public key not initialized");
+    let public_key = derive_ssi_public_key(&ecdsa_public_key, &account, &ssi).public_key;
+    
+    // Fetch UTXOs
+    let treasury_utxos: Vec<Utxo> =
+        bitcoin_api::get_utxos(btc_network, treasury_address.clone())
+        .await
+        .utxos;
+
+    // @dev Build transaction
+    // Build unsigned transaction
+    let transaction = build_unsigned_btc_transaction(
+        false,
+        &public_key,
+        treasury_addr.clone(),
+        &treasury_utxos,
+        dst_address,
+        amount,
+        fee_per_byte
+    ).await?;
+
+    // Sign the transaction with SSI derivation path
+    let derivation_path: Vec<Vec<u8>> = get_ssi_derivation_path(&account, &ssi).into_iter().map(|index| index.0).collect();
+  
+    let signed_transaction: SignedTransaction = sign_transaction_p2wpkh(
+        &public_key,
+        transaction.clone(),
+        derivation_path,
+    )
+    .await.map_err(|err| UpdateBalanceError::CallError{method: err.method().to_string(), reason: Reason::to_string(err.reason())})?;
+
+    // Send the transaction & print result
+    let signed_transaction_bytes = signed_transaction.serialize();
+
+    let result: Vec<String> = vec![
+        format!("transaction_id: {}", transaction.txid().to_string()),
+        format!("given_fee: {}", fee_per_byte),
+    ];
+    
+    match bitcoin_api::send_transaction(btc_network, signed_transaction_bytes).await {
+        Ok(()) => Ok(result),
+        Err(err) => Err(err)
+    }
+}
+
+async fn build_unsigned_btc_transaction(
+    is_redeem: bool,
+    public_key: &[u8],
+    address: BitcoinAddress,
+    utxos: &[Utxo],
+    dst_address: BitcoinAddress,
+    amount: Satoshi,
+    fee_per_byte: MillisatoshiPerByte
+) -> Result<UnsignedTransaction, UpdateBalanceError> {
+    // We have a chicken-and-egg problem where we need to know the length
+    // of the transaction in order to compute its proper fee, but we need
+    // to know the proper fee in order to figure out the inputs needed for
+    // the transaction.
+    //
+    // We solve this problem iteratively. We start with a fee of zero, build
+    // and sign a transaction, see what its size is, and then update the fee,
+    // rebuild the transaction, until the fee is set to the correct amount.
+    
+    let mut total_fee = 0;
+    loop {
+        let transaction =
+            build_unsigned_btc_tx_with_fee(is_redeem, utxos, address.clone(), dst_address.clone(), amount, total_fee)
+                .expect("Error building transaction");
+
+        // Sign the transaction. In this case, we only care about the size
+        // of the signed transaction, so we use a mock signer here for efficiency.
+        let signed_transaction = sign_transaction_p2wpkh(
+            public_key,
+            transaction.clone(),
+            vec![],           // mock derivation path
+        )
+        .await.unwrap();
+
+        let mut signed_tx_bytes_len = signed_transaction.serialize().len() as u64;
+        ic_cdk::println!("Signed transaction size: {:?}", signed_tx_bytes_len);
+        
+        signed_tx_bytes_len = (signed_tx_bytes_len as f64 * 0.7) as u64;
+        if (signed_tx_bytes_len * fee_per_byte) / 1000 == total_fee {
+            ic_cdk::println!("Transaction built with total fee {:?}.", total_fee);
+            return Ok(transaction);
+        } else {
+            total_fee = (signed_tx_bytes_len * fee_per_byte) / 1000;
+        }
+    }
+}
+
+fn build_unsigned_btc_tx_with_fee(
+    is_redeem: bool,
+    utxos: &[Utxo],
+    address: BitcoinAddress,
+    dst_address: BitcoinAddress,
+    amount: u64,
+    fee: u64,
+) -> Result<UnsignedTransaction, String> {
+    // Assume that any amount below this threshold is dust.
+    // @review (mainnet)
+    const DUST_THRESHOLD: u64 = 0;
+
+    if amount < fee {
+        return Err(format!(
+            "Insufficient amount ({} sats) - even lower than fee ({} sats)",
+            amount, fee
+        ));
+    }
+
+    // Select which UTXOs to spend. We naively spend the oldest available UTXOs,
+    // even if they were previously spent in a transaction. This isn't a
+    // problem as long as at most one transaction is created per block and
+    // we're using min_confirmations of 1.
+    let mut utxos_to_spend = vec![];
+    let mut utxos_balance = 0;
+    for utxo in utxos.iter().rev() {
+        utxos_balance += utxo.value;
+        utxos_to_spend.push(utxo);
+        if utxos_balance >= amount {
+            // We have enough inputs to cover the amount we want to spend.
+            break;
+        }
+    }
+
+    if utxos_balance < amount {
+        return Err(format!(
+            "Insufficient balance ({} sats) - Trying to transfer {} sats with a fee of {} sats",
+            utxos_balance, amount, fee
+            ));
+    }
+
+    let withdraw_amount = if is_redeem {
+        // @dev Redemptions always withdraw the entire collateral balance
+        utxos_balance - fee
+    } else {
+        // @dao swap
+        amount - fee - 100 // @governance swap fee
+    };
+
+    if withdraw_amount < 200 {
+        return Err(format!(
+            "Insufficient withdraw amount result ({} sats) - min btc acquired shall be 200 sats",
+            withdraw_amount
+        ));
+    }
+    
+    // @dev Transaction UTXOs
+    let mut inputs: Vec<UnsignedInput> = vec![];
+
+    let mut comsume_utxos: Vec<UnsignedInput> = utxos_to_spend
+        .into_iter()
+        .map(|utxo| UnsignedInput {
+            previous_output: ic_ckbtc_minter_tyron::tx::OutPoint {
+                txid: vec_to_txid(utxo.outpoint.txid.clone()),
+                vout: utxo.outpoint.vout,
+            },
+            value: utxo.value,
+            sequence: 0xffffffff,
+        })
+        .collect();
+
+    inputs.append(&mut comsume_utxos);
+    ic_cdk::println!("UTXO Inputs: {:?}", inputs);
+
+    let mut outputs: Vec<ic_ckbtc_minter_tyron::tx::TxOut> = vec![];
+    
+    outputs.push(ic_ckbtc_minter_tyron::tx::TxOut {
+        address: dst_address,
+        value: withdraw_amount,
+    });
+
+    let remaining_amount = utxos_balance - amount;
+
+    if remaining_amount > DUST_THRESHOLD {
+        outputs.push(ic_ckbtc_minter_tyron::tx::TxOut {
+            address,
+            value: remaining_amount,
+        });
+    }
+    ic_cdk::println!("UTXO Outputs: {:?}", outputs);
+
+    Ok(UnsignedTransaction {
+        inputs,
+        outputs,
+        lock_time: 0,
+    })
+}
+
+async fn select_fee_per_byte(
+    btc_network: BitcoinNetwork,
+    min_fee: u64
+) -> u64 {
+    // Get fee percentiles from previous transactions to estimate our current gas fee
+    let fee_percentiles = bitcoin_api::get_current_fee_percentiles(btc_network).await;
+
+    // Select gas fee in satoshis per byte 
+    let  fee_per_byte = if fee_percentiles.is_empty() {
+        // If there are no fee percentiles (this case can only happen on a regtest
+        // network where there are no non-coinbase transactions),
+        // we use a default of 5000 millisatoshis/byte (i.e. 5 satoshi/byte)
+        5000
+    } else {
+        // Choose the 50th percentile for sending fees.
+        fee_percentiles[50]
+    };
+    ic_cdk::println!("Fee per byte: {:?}", fee_per_byte);
+    // Choose fee_per_byte as the given min_fee except if min_fee > fee_per_byte
+    if min_fee > fee_per_byte {
+        return fee_per_byte
+    } else {
+        return min_fee
+    }
+    // std::cmp::max(min_fee, fee_per_byte)
 }

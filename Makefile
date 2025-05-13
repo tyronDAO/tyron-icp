@@ -10,10 +10,11 @@
 # .PHONY: all
 # all: clear_ledgers clear clean re_ledgers reinstall
 
-.PHONY: all
+.PHONY: mainnet
 #all: clean re_ledgers2 reinstall2
 #all: clean reinstall
-all: clean reinstall2
+mainnet: clean re_ledgers2 reinstall2
+#mainnet: clean upgrade
 
 .PHONY: testnet
 testnet: clean re_ledgers_test reinstall_test
@@ -57,6 +58,11 @@ reinstall:
 reinstall2:
 	dfx canister --ic install --mode=reinstall basic_bitcoin_tyron2 --argument '(variant { mainnet }, variant { Init = record { mode = variant { GeneralAvailability }; btc_network = variant { Mainnet }; ledger_id = principal "qp2tv-uaaaa-aaaam-qb5ta-cai"; susd_id = principal "qi3vb-zyaaa-aaaam-qb5tq-cai"; xrc_id = principal "uf6dk-hyaaa-aaaaq-qaaaq-cai"; siwb_id = principal "mwm4a-eiaaa-aaaah-aebnq-cai"; ecdsa_key_name = "key_1"; min_confirmations = opt 1; retrieve_btc_min_amount = 200; max_time_in_queue_nanos = 600_000_000_000 } })'
 
+.PHONY: upgrade
+upgrade:
+	dfx canister --ic install --mode=upgrade basic_bitcoin_tyron2
+# --argument '(variant { mainnet }, variant { Init = record { mode = variant { GeneralAvailability }; btc_network = variant { Mainnet }; ledger_id = principal "qp2tv-uaaaa-aaaam-qb5ta-cai"; susd_id = principal "qi3vb-zyaaa-aaaam-qb5tq-cai"; xrc_id = principal "uf6dk-hyaaa-aaaaq-qaaaq-cai"; siwb_id = principal "mwm4a-eiaaa-aaaah-aebnq-cai"; ecdsa_key_name = "key_1"; min_confirmations = opt 1; retrieve_btc_min_amount = 200; max_time_in_queue_nanos = 600_000_000_000 } })'
+
 .PHONY: reinstall_test
 reinstall_test:
 	dfx canister --ic install --mode=reinstall basic_bitcoin_tyron_test --argument '(variant { testnet }, variant { Init = record { mode = variant { GeneralAvailability }; btc_network = variant { Testnet }; ledger_id = principal "fr53x-hiaaa-aaaam-qdhca-cai"; susd_id = principal "fw45d-kqaaa-aaaam-qdhcq-cai"; xrc_id = principal "uf6dk-hyaaa-aaaaq-qaaaq-cai"; siwb_id = principal "mwm4a-eiaaa-aaaah-aebnq-cai"; ecdsa_key_name = "test_key_1"; min_confirmations = opt 1; retrieve_btc_min_amount = 200; max_time_in_queue_nanos = 600_000_000_000 } })'
@@ -89,14 +95,12 @@ bal_susd:
 add_bal:
 	dfx canister --ic call basic_bitcoin_tyron update_ssi_balance "(record { ssi=\"$(SSI)\"; op=variant { getsyron }})"
 
-# # # # # # # 
-
 # clear was needed for dfx 0.19
 .PHONY: clear
 .SILENT: clear
 clear:
-	dfx canister call --ic aaaaa-aa stored_chunks '(record { canister_id = principal "qczt5-riaaa-aaaam-qbfkq-cai" })'
-	dfx canister call --ic aaaaa-aa clear_chunk_store '(record { canister_id = principal "qczt5-riaaa-aaaam-qbfkq-cai" })'
+	dfx canister call --ic aaaaa-aa stored_chunks '(record { canister_id = principal "qgzyj-ciaaa-aaaam-qb5sq-cai" })'
+	dfx canister call --ic aaaaa-aa clear_chunk_store '(record { canister_id = principal "qgzyj-ciaaa-aaaam-qb5sq-cai" })'
 
 .PHONY: clear_ledgers
 clear_ledgers:
@@ -175,6 +179,10 @@ info:
 .PHONY: p2wpkh
 p2wpkh:
 	dfx canister --network="$(NET)" call basic_bitcoin_tyron get_p2wpkh_address
+
+.PHONY: log
+log:
+	dfx canister --ic logs basic_bitcoin_tyron2
 
 .PHONY: logs
 logs:
