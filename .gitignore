@@ -18,3 +18,4 @@ src/xrc_demo/node_modules
 
 # generated files (dfx generate)
 src/declarations/
+identity.pem
