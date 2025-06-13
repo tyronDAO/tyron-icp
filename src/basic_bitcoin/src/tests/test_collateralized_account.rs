@@ -38,7 +38,7 @@ mod tests {
     fn get_collateralized_account(exchange_rate_provider: &dyn ExchangeRateProvider, balance_provider: &dyn BalanceProvider, ssi: &str, dummy: bool) -> Result<CollateralizedAccount, UpdateBalanceError> {
         let xr = exchange_rate_provider.get_exchange_rate()?;
         let btc_1 = balance_provider.balance_of(SyronLedger::BTC, ssi, 1).unwrap_or(0);
-        let susd_1 = balance_provider.balance_of(SyronLedger::SUSD, ssi, 1).unwrap_or(0);
+        let susd_1 = balance_provider.balance_of(SyronLedger::SYRON, ssi, 1).unwrap_or(0);
         
         let exchange_rate: u64 = if dummy {
             if btc_1 != 0 {
@@ -79,7 +79,7 @@ mod tests {
             .returning(|_, _, _| Ok(0));
         
         mock_balance_provider.expect_balance_of()
-            .with(eq(SyronLedger::SUSD), eq(ssi), eq(1))
+            .with(eq(SyronLedger::SYRON), eq(ssi), eq(1))
             .returning(|_, _, _| Ok(0));
 
         let result = get_collateralized_account(&mock_exchange_rate_provider, &mock_balance_provider, ssi, false);

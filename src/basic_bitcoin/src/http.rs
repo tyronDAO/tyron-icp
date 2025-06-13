@@ -3,6 +3,7 @@ use ic_ckbtc_minter_tyron::updates::update_balance::UpdateBalanceError;
 use serde_json::Value;
 use crate::{resolve_service_provider, HttpOutcallError, ResolvedServiceProvider, ServiceError, ServiceProvider, ServiceResult, CONTENT_TYPE_HEADER, CONTENT_TYPE_VALUE };
 use num_traits::ToPrimitive;
+use ic_btc_interface::Utxo;
 
 pub async fn call_indexer_inscription(
     provider: u64,
@@ -43,6 +44,30 @@ pub async fn call_indexer_balance(
         Err(err) => {
             return Err(UpdateBalanceError::GenericError{
                 error_code: 444,
+                error_message: format!("Failed to finalize HTTPS Outcall with error: {:?}", err),
+            });
+        }
+    };
+    Ok(outcall)
+}
+
+pub async fn call_indexer_runes_balance(
+    utxo: Utxo,
+    cycles_cost: u128
+) -> Result<String, UpdateBalanceError> {
+    let txid_bytes = utxo.outpoint.txid.as_ref().iter().rev().map(|n| *n as u8).collect::<Vec<u8>>();
+    let txid = hex::encode(txid_bytes);
+
+    let index = utxo.outpoint.vout.to_string();
+
+    let provider = 0; // @review (alpha)
+    let endpoint = format!("get-unisat-runes-balance?txid={}&index={}", txid, index);
+
+    let outcall = match web3_request(ServiceProvider::Provider(provider), &endpoint, "", 2048, cycles_cost).await {
+        Ok(result) => result,
+        Err(err) => {
+            return Err(UpdateBalanceError::GenericError{
+                error_code: 555,
                 error_message: format!("Failed to finalize HTTPS Outcall with error: {:?}", err),
             });
         }

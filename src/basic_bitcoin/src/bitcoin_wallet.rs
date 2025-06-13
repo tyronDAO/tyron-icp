@@ -53,17 +53,16 @@ impl fmt::Display for DisplayOutpoint<'_> {
 
 /// Returns the P2WPKH address of this canister at the given derivation path.
 pub(crate) async fn get_p2wpkh_address(
-    key_name: String,
     derivation_path: Vec<Vec<u8>>,
 ) -> String {
-    // Fetch the public key of the given derivation path.
+    // Fetch the public key of the given derivation path
+    let key_name = state::read_state(|s| s.ecdsa_key_name.clone());
     let public_key = ecdsa_api::ecdsa_public_key(key_name, derivation_path).await;
 
     public_key_to_p2wpkh(&public_key)
 }
 
 pub(crate) async fn syron_p2wpkh(
-    key_name: String,
     origin_derivation_path: Vec<Vec<u8>>,
     origin_address: String,
     dst_address: &str,
@@ -79,7 +78,8 @@ pub(crate) async fn syron_p2wpkh(
     };
     let fee_per_byte = select_fee_per_byte(btc_network, min_fee).await;
 
-    // @dev Fetch sender's public key, address, and UTXOs.
+    // @dev Fetch sender's public key, address & UTXOs
+    let key_name = state::read_state(|s| s.ecdsa_key_name.clone());
     let own_public_key =
         ecdsa_api::ecdsa_public_key(key_name.clone(), origin_derivation_path.clone()).await;
 
@@ -1187,4 +1187,15 @@ async fn select_fee_per_byte(
         return min_fee
     }
     // std::cmp::max(min_fee, fee_per_byte)
+}
+
+pub(crate) async fn fetch_bitcoin_network() -> BitcoinNetwork {
+    // @dev Read Network
+    let network =
+        state::read_state(|s| (s.btc_network));
+    let btc_network: BitcoinNetwork = match network {
+        Network::Mainnet => BitcoinNetwork::Mainnet,
+        _ => BitcoinNetwork::Testnet,
+    };
+    return btc_network
 }
