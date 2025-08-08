@@ -14,7 +14,7 @@
         }
       ]
     },
-    "icrc1_ledger_syron_btc": {
+    "icrc1_ledger_syron_sbtc": {
       "type": "custom",
       "candid": "src/ledger/icrc1_ledger.did",
       "wasm": "src/ledger/ic-icrc1-ledger.wasm.gz"
@@ -24,7 +24,7 @@
       "candid": "src/ledger/icrc1_ledger.did",
       "wasm": "src/ledger/ic-icrc1-ledger.wasm.gz"
     },
-    "basic_bitcoin_tyron2": {
+    "basic_bitcoin_tyron_alpha": {
       "type": "custom",
       "package": "basic_bitcoin_tyron",
       "candid": "src/basic_bitcoin/basic_bitcoin_tyron.did",
@@ -36,12 +36,12 @@
         }
       ]
     },
-    "icrc1_ledger_syron_btc2": {
+    "icrc1_ledger_syron_sbtc_alpha": {
       "type": "custom",
       "candid": "src/ledger/icrc1_ledger.did",
       "wasm": "src/ledger/ic-icrc1-ledger.wasm.gz"
     },
-    "icrc1_ledger_syron_usd2": {
+    "icrc1_ledger_syron_susd_alpha": {
       "type": "custom",
       "candid": "src/ledger/icrc1_ledger.did",
       "wasm": "src/ledger/ic-icrc1-ledger.wasm.gz"
@@ -58,7 +58,7 @@
         }
       ]
     },
-    "icrc1_ledger_syron_btc_test": {
+    "icrc1_ledger_syron_sbtc_test": {
       "type": "custom",
       "candid": "src/ledger/icrc1_ledger.did",
       "wasm": "src/ledger/ic-icrc1-ledger.wasm.gz"

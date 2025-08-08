@@ -15,13 +15,12 @@ use bitcoin::{
     Address, AddressType, EcdsaSighashType, OutPoint, Script, Transaction, TxIn, TxOut, Txid,
 };
 use candid::error;
-use ic_btc_interface::{GetBalanceError, Network};
+use ic_btc_interface::{self, GetBalanceError, Network};
 use ic_cdk::api::management_canister::bitcoin::{MillisatoshiPerByte, BitcoinNetwork, Satoshi, Utxo,  Outpoint};
 use ic_cdk::print;
 use ic_ckbtc_minter_tyron::address::{derive_ssi_public_key, get_ssi_derivation_path, ssi_derivation_path, BitcoinAddress};
 use ic_ckbtc_minter_tyron::logs::P1;
 use ic_ckbtc_minter_tyron::management::{get_utxos, Reason};
-use ic_ckbtc_minter_tyron::state::read_state;
 use ic_ckbtc_minter_tyron::updates::get_withdrawal_account::compute_subaccount;
 use ic_ckbtc_minter_tyron::updates::update_balance::UpdateBalanceError;
 use ic_ckbtc_minter_tyron::{
@@ -29,7 +28,8 @@ use ic_ckbtc_minter_tyron::{
     tx::{self, SignedTransaction, UnsignedInput, UnsignedTransaction, SignedInput},
     management::{sign_with_ecdsa, CallError, CallSource},
     signature::EncodedSignature,
-    address::public_key_to_p2wpkh
+    address::public_key_to_p2wpkh,
+    build_unsigned_transaction_runes_deposit
 };
 use icrc_ledger_types::icrc1::account::Account;
 use sha2::Digest;
@@ -40,6 +40,7 @@ use ic_management_canister_types::DerivationPath;
 use ic_canister_log::log;
 use std::fmt;
 use regex;
+use std::collections::BTreeSet;
 
 const SIG_HASH_TYPE: EcdsaSighashType = EcdsaSighashType::All;
 
@@ -69,13 +70,7 @@ pub(crate) async fn syron_p2wpkh(
     tx_id: String,
     min_fee: u64    
 ) -> Result<String, UpdateBalanceError> {
-    // @dev Set Bitcoin network
-    let network =
-        state::read_state(|s| (s.btc_network));
-    let btc_network: BitcoinNetwork = match network {
-        Network::Mainnet => BitcoinNetwork::Mainnet,
-        _ => BitcoinNetwork::Testnet,
-    };
+    let (network, btc_network) = fetch_bitcoin_network().await;
     let fee_per_byte = select_fee_per_byte(btc_network, min_fee).await;
 
     // @dev Fetch sender's public key, address & UTXOs
@@ -152,8 +147,16 @@ pub(crate) async fn syron_p2wpkh(
 
     let select_utxo = option_utxo.expect("No matching UTXO found in the SYRON minter.");
 
-    let syron_btc_address = BitcoinAddress::parse(&origin_address, network).unwrap();
-    let dst_address = BitcoinAddress::parse(&dst_address, network).unwrap();
+    let syron_btc_address = BitcoinAddress::parse(&origin_address, network)
+        .map_err(|e| UpdateBalanceError::SystemError{
+            method: "syron_p2wpkh".to_string(),
+            reason: format!("Invalid origin address: {}", e),
+        })?;
+    let dst_address = BitcoinAddress::parse(&dst_address, network)
+        .map_err(|e| UpdateBalanceError::SystemError{
+            method: "syron_p2wpkh".to_string(),
+            reason: format!("Invalid destination address: {}", e),
+        })?;
     
     // @dev Builds the transaction that sends the selected UTXO (inscribe-transfer) to the destination address.
     let transaction = build_unsigned_mint(
@@ -188,21 +191,14 @@ pub(crate) async fn syron_p2wpkh(
 }
 
 pub(crate) async fn burn_p2wpkh(
-    amount: u64,
     ssi: &str,
     sdb: String,
     dst_address: &str,
     syron_address: Option<String>,
     txid: Option<String>,
     min_fee: u64
-) -> Result<String, UpdateBalanceError> {
-    // @dev 1. Set Bitcoin network
-    let network =
-        state::read_state(|s| (s.btc_network));
-    let btc_network: BitcoinNetwork = match network {
-        Network::Mainnet => BitcoinNetwork::Mainnet,
-        _ => BitcoinNetwork::Testnet,
-    };
+) -> Result<String, UpdateBalanceError> {       
+    let (network, btc_network): (Network, BitcoinNetwork) = fetch_bitcoin_network().await;
     let fee_per_byte = select_fee_per_byte(btc_network, min_fee).await;
 
     let ecdsa_public_key = state::read_state(|s| s.ecdsa_public_key.clone()).expect("ECDSA public key not initialized");
@@ -225,14 +221,28 @@ pub(crate) async fn burn_p2wpkh(
         .await
         .utxos;
 
+    let amount = utxos.iter().map(|u| u.value).sum::<u64>();
+    
     // @dev Parse addresses
-    let sdb_address = BitcoinAddress::parse(&sdb, network).unwrap();
-    let dst_address = BitcoinAddress::parse(dst_address, network).unwrap();
+    let sdb_address = BitcoinAddress::parse(&sdb, network)
+        .map_err(|e| UpdateBalanceError::SystemError{
+            method: "burn_p2wpkh".to_string(),
+            reason: format!("Invalid SDB address: {} - given: {}", e, sdb)
+        })?;
+    let dst_address = BitcoinAddress::parse(dst_address, network)
+        .map_err(|e| UpdateBalanceError::SystemError{
+            method: "burn_p2wpkh".to_string(),
+            reason: format!("Invalid destination address: {} - given: {}", e, dst_address)
+        })?;
    
     // @dev Build transaction
     let transaction = match syron_address {
         Some(address) => {
-            let syron_address = BitcoinAddress::parse(&address, network).unwrap();
+            let syron_address = BitcoinAddress::parse(&address, network)
+                .map_err(|e| UpdateBalanceError::SystemError{
+                    method: "burn_p2wpkh".to_string(),
+                    reason: format!("Invalid syron address: {}", e),
+                })?;
             
             // @dev The inscribe-transfer UTXO (SYRON BRC-20)
             let txid = txid.expect("No transaction ID provided for the SYRON BRC-20 inscribe-transfer UTXO.");
@@ -296,7 +306,11 @@ pub(crate) async fn burn_p2wpkh(
         transaction.clone(),
         derivation_path,
     )
-    .await.unwrap();
+    .await
+    .map_err(|e| UpdateBalanceError::CallError{
+        method: "burn_p2wpkh".to_string(),
+        reason: format!("Sign transaction error: {:?}", e)
+    })?;
 
     let concatenated_result = format!(
         "Fee per byte: {} && Transaction ID: {}",
@@ -308,6 +322,97 @@ pub(crate) async fn burn_p2wpkh(
     match bitcoin_api::send_transaction(btc_network, signed_transaction_bytes).await {
         Ok(()) => Ok(concatenated_result),
         Err(err) => Err(err)
+    }
+}
+
+pub(crate) async fn burn_p2wpkh_runes(
+    btc_network: BitcoinNetwork,
+    dao_fee: Satoshi, // @governance
+    ssi: &str,
+    sdb_address: BitcoinAddress,
+    fee_per_byte: Satoshi,
+    sats_utxos: &mut BTreeSet<ic_btc_interface::Utxo>,
+    runes_utxos: &mut BTreeSet<ic_btc_interface::Utxo>,
+    treasury_addr: BitcoinAddress,
+    outputs: Vec<(BitcoinAddress, Satoshi)>
+) -> Result<String, UpdateBalanceError> {
+    if sats_utxos.is_empty() {
+        return Err(UpdateBalanceError::GenericError{
+            error_code: 7001,
+            error_message: "@burn_p2wpkh_runes: No sats UTXOs for runes deposit".to_string()
+        });
+    }
+    if runes_utxos.is_empty() {
+        return Err(UpdateBalanceError::GenericError{
+            error_code: 7002,
+            error_message: "@burn_p2wpkh_runes: No runes UTXOs to burn".to_string()
+        });
+    } 
+    let ecdsa_public_key = state::read_state(|s| s.ecdsa_public_key.clone()).expect("ECDSA public key not initialized");
+
+    let sdb_subaccount = compute_subaccount(1, &ssi);
+    
+    let account = Account {
+        owner: ic_cdk::id(),
+        subaccount: Some(sdb_subaccount)
+    };
+
+    // @dev Fetch SDB's public key and UTXOs.
+    let sdb_public_key = derive_ssi_public_key(&ecdsa_public_key, &account, &ssi).public_key;
+
+    // @dev Build unsigned transaction
+    ic_cdk::println!("@burn_p2wpkh_runes: Building transaction with {} runes UTXOs and {} sats UTXOs", runes_utxos.len(), sats_utxos.len());
+    ic_cdk::println!("@burn_p2wpkh_runes: Runes UTXOs: {:?}", runes_utxos.iter().map(|u| u.value).collect::<Vec<_>>());
+    ic_cdk::println!("@burn_p2wpkh_runes: Sats UTXOs: {:?}", sats_utxos.iter().map(|u| u.value).collect::<Vec<_>>());
+    let (transaction, _, _, _) = build_unsigned_transaction_runes_deposit(
+        runes_utxos,
+        sats_utxos,
+        outputs,
+        sdb_address,
+        fee_per_byte,
+        dao_fee,
+        treasury_addr
+    ).map_err(|e| UpdateBalanceError::GenericError{
+        error_code: 7003,
+        error_message: format!("@burn_p2wpkh_runes: BuildTxError: {:?}", e)
+    })?;
+    
+    ic_cdk::println!("@burn_p2wpkh_runes: Transaction built successfully with {} inputs and {} outputs", transaction.inputs.len(), transaction.outputs.len());
+
+    // @dev Sign the transaction
+    ic_cdk::println!("@burn_p2wpkh_runes: Signing transaction...");
+    let derivation_path: Vec<Vec<u8>> = get_ssi_derivation_path(&account, ssi).into_iter().map(|index| index.0).collect();
+    let signed_transaction: SignedTransaction = sign_transaction_p2wpkh(
+        &sdb_public_key,
+        transaction.clone(),
+        derivation_path,
+    )
+    .await
+    .map_err(|e| UpdateBalanceError::GenericError{
+        error_code: 7004,
+        error_message: format!("@burn_p2wpkh_runes: Sign Txn Error: {:?}", e)
+    })?;
+    
+    ic_cdk::println!("@burn_p2wpkh_runes: Transaction signed successfully");
+
+    let signed_transaction_bytes = signed_transaction.serialize();
+    
+    let concatenated_result = format!(
+        "Fee per byte: {} && Transaction ID: {} && Transaction Hex: {}",
+        fee_per_byte,
+        transaction.txid().to_string(),
+        hex::encode(&signed_transaction_bytes),
+    );
+    ic_cdk::println!("@burn_p2wpkh_runes: Sending transaction of {} bytes to network", signed_transaction_bytes.len());
+    match bitcoin_api::send_transaction(btc_network, signed_transaction_bytes).await {
+        Ok(()) => {
+            ic_cdk::println!("@burn_p2wpkh_runes: Transaction sent successfully to network");
+            Ok(concatenated_result)
+        },
+        Err(err) => {
+            ic_cdk::println!("@burn_p2wpkh_runes: Failed to send transaction to network: {:?}", err);
+            Err(err)
+        }
     }
 }
 
@@ -396,12 +501,7 @@ pub(crate) async fn liquidate_p2wpkh(
     min_fee: u64
 ) -> Result<[u8;32], UpdateBalanceError> {
     // @dev 1. Set Bitcoin network
-    let network =
-        state::read_state(|s| (s.btc_network));
-    let btc_network: BitcoinNetwork = match network {
-        Network::Mainnet => BitcoinNetwork::Mainnet,
-        _ => BitcoinNetwork::Testnet,
-    };
+    let (network, btc_network): (Network, BitcoinNetwork) = fetch_bitcoin_network().await;
     let fee_per_byte = select_fee_per_byte(btc_network, min_fee).await;
 
     let ecdsa_public_key = state::read_state(|s| s.ecdsa_public_key.clone()).expect("ECDSA public key not initialized");
@@ -433,8 +533,16 @@ pub(crate) async fn liquidate_p2wpkh(
         }
     }
 
-    let sdb_address = BitcoinAddress::parse(&sdb, network).unwrap();
-    let dst_address = BitcoinAddress::parse(dst_address, network).unwrap();
+    let sdb_address = BitcoinAddress::parse(&sdb, network)
+        .map_err(|e| UpdateBalanceError::SystemError{
+            method: "liquidate_p2wpkh".to_string(),
+            reason: format!("Invalid SDB address: {}", e),
+        })?;
+    let dst_address = BitcoinAddress::parse(dst_address, network)
+        .map_err(|e| UpdateBalanceError::SystemError{
+            method: "liquidate_p2wpkh".to_string(),
+            reason: format!("Invalid destination address: {}", e),
+        })?;
 
     let transaction = build_unsigned_liquidation(
         &sdb_public_key,
@@ -453,7 +561,11 @@ pub(crate) async fn liquidate_p2wpkh(
         transaction,
         derivation_path,
     )
-    .await.unwrap();
+    .await
+    .map_err(|e| UpdateBalanceError::CallError{
+        method: "liquidate_p2wpkh".to_string(),
+        reason: format!("Failed to sign liquidation transaction: {:?}", e),
+    })?;
 
     let signed_transaction_bytes = signed_transaction.serialize();
     match bitcoin_api::send_transaction(btc_network, signed_transaction_bytes).await {
@@ -485,7 +597,10 @@ async fn build_unsigned_transaction(
     loop {
         let transaction =
             build_unsigned_tx_with_fee(utxos, address.clone(), dst_address.clone(), amount, total_fee, syron_address.clone(), select_utxo.clone())
-                .expect("Error building transaction");
+                .map_err(|e| UpdateBalanceError::CallError{
+                    method: "build_unsigned_transaction".to_string(),
+                    reason: format!("Error building transaction: {}", e),
+                })?;
 
         // Sign the transaction. In this case, we only care about the size
         // of the signed transaction, so we use a mock signer here for efficiency.
@@ -494,7 +609,11 @@ async fn build_unsigned_transaction(
             transaction.clone(),
             vec![],           // mock derivation path
         )
-        .await.unwrap();
+        .await
+        .map_err(|e| UpdateBalanceError::CallError{
+            method: "build_unsigned_transaction".to_string(),
+            reason: format!("Failed to sign transaction for size calculation: {:?}", e),
+        })?;
 
         let signed_tx_bytes_len = signed_transaction.serialize().len() as u64;
 
@@ -539,7 +658,7 @@ async fn build_transaction_gas(
                 }
             },
             Err (error) => {
-                // Extract the required additional balance from the error message
+                // Extract the required additional balance from the error message @review (alpha)
                 if let Some(captures) = regex::Regex::new(r"Please deposit at least (\d+) sats into your SDB.")
                 .unwrap()
                 .captures(&error)
@@ -575,7 +694,10 @@ async fn build_unsigned_liquidation(
     loop {
         let transaction =
             build_unsigned_liquidation_with_fee(utxos, address.clone(), dst_address.clone(), amount, total_fee)
-                .expect("Error building transaction");
+                .unwrap_or_else(|e| {
+                    ic_cdk::println!("Error building liquidation transaction: {}", e);
+                    panic!("Failed to build liquidation transaction")
+                });
 
         // Sign the transaction. In this case, we only care about the size
         // of the signed transaction, so we use a mock signer here for efficiency.
@@ -1162,9 +1284,9 @@ fn build_unsigned_btc_tx_with_fee(
     })
 }
 
-async fn select_fee_per_byte(
+pub (crate) async fn select_fee_per_byte(
     btc_network: BitcoinNetwork,
-    min_fee: u64
+    recommended_fee: u64
 ) -> u64 {
     // Get fee percentiles from previous transactions to estimate our current gas fee
     let fee_percentiles = bitcoin_api::get_current_fee_percentiles(btc_network).await;
@@ -1179,17 +1301,18 @@ async fn select_fee_per_byte(
         // Choose the 50th percentile for sending fees.
         fee_percentiles[50]
     };
-    ic_cdk::println!("Fee per byte: {:?}", fee_per_byte);
-    // Choose fee_per_byte as the given min_fee except if min_fee > fee_per_byte
-    if min_fee > fee_per_byte {
-        return fee_per_byte
+    ic_cdk::println!("@select_fee_per_byte: from current fee percentiles = {:?}", fee_per_byte);
+    
+    // Choose the lower of recommended_fee or fee_per_byte to avoid excessive fees
+    if recommended_fee < fee_per_byte {
+        ic_cdk::println!("@select_fee_per_byte: from recommended fee = {:?}", recommended_fee);
+        return recommended_fee
     } else {
-        return min_fee
+        return fee_per_byte
     }
-    // std::cmp::max(min_fee, fee_per_byte)
 }
 
-pub(crate) async fn fetch_bitcoin_network() -> BitcoinNetwork {
+pub(crate) async fn fetch_bitcoin_network() -> (Network, BitcoinNetwork)     {
     // @dev Read Network
     let network =
         state::read_state(|s| (s.btc_network));
@@ -1197,5 +1320,5 @@ pub(crate) async fn fetch_bitcoin_network() -> BitcoinNetwork {
         Network::Mainnet => BitcoinNetwork::Mainnet,
         _ => BitcoinNetwork::Testnet,
     };
-    return btc_network
+    return (network, btc_network)
 }

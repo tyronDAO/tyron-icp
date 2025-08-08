@@ -2,19 +2,19 @@
   "basic_bitcoin_tyron": {
     "ic": "qczt5-riaaa-aaaam-qbfkq-cai"
   },
-  "basic_bitcoin_tyron2": {
+  "basic_bitcoin_tyron_alpha": {
     "ic": "qgzyj-ciaaa-aaaam-qb5sq-cai"
   },
   "basic_bitcoin_tyron_test": {
     "ic": "fe2k2-gaaaa-aaaam-qdhbq-cai"
   },
-  "icrc1_ledger_syron_btc": {
+  "icrc1_ledger_syron_sbtc": {
     "ic": "ql2yb-haaaa-aaaam-qbfla-cai"
   },
-  "icrc1_ledger_syron_btc2": {
+  "icrc1_ledger_syron_sbtc_alpha": {
     "ic": "qp2tv-uaaaa-aaaam-qb5ta-cai"
   },
-  "icrc1_ledger_syron_btc_test": {
+  "icrc1_ledger_syron_sbtc_test": {
     "ic": "fr53x-hiaaa-aaaam-qdhca-cai"
   },
   "icrc1_ledger_syron_susd": {
@@ -23,7 +23,7 @@
   "icrc1_ledger_syron_susd_test": {
     "ic": "fw45d-kqaaa-aaaam-qdhcq-cai"
   },
-  "icrc1_ledger_syron_usd2": {
+  "icrc1_ledger_syron_susd_alpha": {
     "ic": "qi3vb-zyaaa-aaaam-qb5tq-cai"
   }
 }

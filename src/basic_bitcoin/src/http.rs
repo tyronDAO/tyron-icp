@@ -1,7 +1,9 @@
 use ic_cdk::api::management_canister::http_request::{CanisterHttpRequestArgument, HttpHeader, HttpMethod, HttpResponse, TransformArgs, TransformContext};
 use ic_ckbtc_minter_tyron::updates::update_balance::UpdateBalanceError;
 use serde_json::Value;
-use crate::{resolve_service_provider, HttpOutcallError, ResolvedServiceProvider, ServiceError, ServiceProvider, ServiceResult, CONTENT_TYPE_HEADER, CONTENT_TYPE_VALUE };
+use super::provider::{resolve_service_provider};
+use super::types::{ServiceProvider, ResolvedServiceProvider, HttpOutcallError, ServiceError, ServiceResult};
+use super::constants::{CONTENT_TYPE_HEADER, CONTENT_TYPE_VALUE};
 use num_traits::ToPrimitive;
 use ic_btc_interface::Utxo;
 
@@ -184,7 +186,8 @@ pub fn do_transform_unisat_request(mut args: TransformArgs) -> HttpResponse {
     // } else {
         // The response body is expected to be JSON, so let's canonicalize it to remove non-deterministic fields
         let body = canonicalize_json(&args.response.body).unwrap_or(args.response.body.clone());
-        let body_json: Value = serde_json::from_slice(&body).unwrap();
+        let body_json: Value = serde_json::from_slice(&body)
+            .unwrap_or_else(|_| serde_json::Value::Null);
 
         // Access the "amt" field in the "brc20" object
         let pointer = "/data";
@@ -211,7 +214,8 @@ pub fn do_transform_bis_request(mut args: TransformArgs) -> HttpResponse {
     // } else {
         // The response body is expected to be JSON, so let's canonicalize it to remove non-deterministic fields
         let body = canonicalize_json(&args.response.body).unwrap_or(args.response.body.clone());
-        let body_json: Value = serde_json::from_slice(&body).unwrap();
+        let body_json: Value = serde_json::from_slice(&body)
+            .unwrap_or_else(|_| serde_json::Value::Null);
 
         // Access the "amt" field in the "brc20" object
         let pointer = "/";
@@ -263,8 +267,22 @@ pub async fn get_syron_balance(sdb: String, provider: u64) -> Option<u64> {
         .next()
         .unwrap_or("".to_string());
 
-    let syron_f64: f64 = syron_balance.parse().unwrap_or(0.0);
-    let syron_u64: u64 = (syron_f64 * 100_000_000 as f64) as u64;
+    ic_cdk::println!("Raw syron_balance from indexer: '{}'", syron_balance);
+    
+    // Check if the balance contains a decimal point (dollars) or is already in satoshis
+    let syron_u64: u64 = if syron_balance.contains('.') {
+        // Format: "0.25" (dollars) - convert to satoshis
+        let syron_f64: f64 = syron_balance.parse().unwrap_or(0.0);
+        ic_cdk::println!("Parsed as dollars: {}", syron_f64);
+        let satoshis = (syron_f64 * 100_000_000 as f64) as u64;
+        ic_cdk::println!("Converted to satoshis: {}", satoshis);
+        satoshis
+    } else {
+        // Format: "25000000" (already in satoshis)
+        let satoshis: u64 = syron_balance.parse().unwrap_or(0);
+        ic_cdk::println!("Already in satoshis: {}", satoshis);
+        satoshis
+    };
 
     Some(syron_u64)
 }
