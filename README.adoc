@@ -1,10 +1,74 @@
-= Basic Bitcoin with Syron USD
+= Basic Bitcoin with Syron
 
 == Overview
 
+Syron stablecoins, particularly Syron SUSD, are being designed to provide Bitcoin hodlers with a decentralized method to access liquidity without having to sell their BTC. Built as a metaprotocol, Syron operates on Bitcoin Mainnet (as BRC-20 & Runes) and integrates seamlessly with the Internet Computer (ICP) via "Chain Fusion".
+
 This Proof of Concept (PoC) is a work in progress to walk you through deploying Syron and withdrawing BRC-20 dollars (SYRON) on Bitcoin. Thus, Syron is a Bitcoin-native stablecoin based on the Ordinals protocol that smoothly integrates with the Internet Computer at the protocol level to offer access to USD liquidity and Decentralized Finance (DeFi) on Bitcoin Layer 1. Leveraging the https://internetcomputer.org/docs/current/references/samples/rust/basic_bitcoin/[Basic Bitcoin] foundation for the PoC, Syron ensures a smooth transition for this implementation.
 
-Explore the https://docs.tyrondao.org[documentation] for more comprehensive insights.
+=== 🪙 Token: Syron Dollar (SUSD)
+
+A stablecoin interoperable across Bitcoin, ICP, and other platforms.  
+
+Based on fungible tokens: interchangeable, divisible, and uniform in value.  
+
+The architecture is built for scalability and seamless cross-chain functionality.  
+
+==== Syron Dollar (SUSD ledger) canister ID:
+
+```json
+{ 
+  "icrc1": "qi3vb-zyaaa-aaaam-qb5tq-cai"
+}
+```
+
+=== Technical Details
+
+- Bitcoin-native implementation via Runes & BRC-20, leveraging the Ordinals protocol (inscriptions).
+- Syron stablecoins are premined by Tyron Mapu Community Interest Company, and then distributed to the Syron Bitcoin Minters (SBMs). The balances of the SBMs and CIC wallets must be excluded from the circulating supply.
+- SBMs are Bitcoin mainnet addresses managed by the Syron Minter canister on ICP.
+
+==== Syron Dollar (SUSD minter) canister ID
+
+```json
+{ 
+  "minter": "qgzyj-ciaaa-aaaam-qb5sq-cai"
+}
+```
+
+---
+
+== ⚙️ Minting Process (Creating SUSD)
+
+Users deposit BTC into a Safety Deposit ₿ox (SDB) to mint SUSD.
+
+Key features:
+
+- Decentralized (one SDB per user)
+- Trustless system (open-source code), based on Self-Sovereign Identity and Internet Computer smart contracts.
+- Over-collateralized (150% BTC collateral)
+
+Each user has their own SDB, which is linked to their non-custodial wallet, ensuring complete self-custody.
+
+The system uses two ICRC1 ledgers:
+
+- One for BTC collateral
+- One for stablecoin balances, loans, and withdrawals (the SUSD ledger)
+
+---
+
+== 🔥 Burning Process (Redeeming BTC)
+
+Users can redeem their BTC by burning their SUSD (depositing it back into their Tyron account).
+The TyronDAO app executes a smart contract call to send the BTC back to the user's wallet.
+
+This process ensures:
+
+- Transparency
+- Trustlessness
+- System remains over-collateralized
+
+---
 
 == Architecture
 
@@ -12,20 +76,39 @@ image::public/images/syron_minting.png[]
 
 The architecture of Syron includes:
 
-- **Syron USD (SYRON)**: A stablecoin pegged to USD, minted by over-collateralizing Bitcoin in safety deposit boxes.
+- **Syron SUSD**: A stablecoin pegged to USD, minted by over-collateralizing Bitcoin in safety deposit boxes.
 - **Safety Deposit ₿ox**: Hold BTC collateral and manage Syron operations.
 - **Internet Computer Protocol (ICP)**: Facilitates smart contract execution and interoperability. The Internet Computer provides the foundation in terms of open-source software and reusable components, such as ckBTC and the Exchange Rate Canister.
 - **Integration with Bitcoin**: Utilizes ICP for seamless integration with the Bitcoin network, enabling verification of BTC collateral and transaction management using chain-key cryptography.
 
 This architecture ensures easy access to USD liquidity while retaining BTC ownership, fostering a permissionless system with enhanced security and interoperability within the Bitcoin DeFi ecosystem.
 
-== Bitcoin Mainnet
+---
+
+=== ✅ Key Takeaways
+
+- Interoperable stablecoin across BTC, ICP, and more
+- Built on BRC-20, Runes, and ICRC1 standards
+- Fully decentralized custody via individual SDBs
+- On-chain minting and burning through Internet Computer
+- Over-collateralized by BTC (150% ratio)
+- Open-source code
+
+Explore the https://docs.tyrondao.org[documentation] for more comprehensive insights. 
+
+---
+
+=== Bitcoin Mainnet
 
 Explore Tyron's open-source web application to interact with the Bitcoin mainnet:
 
-https://tyron.io[tyron.io]
+https://app.tyrondao.org/[app.tyrondao.org]
 
-== Prerequisites
+---
+
+== Installation
+
+=== Prerequisites
 
 Commands are provided using macOS as an example.
 
